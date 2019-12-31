@@ -53,18 +53,20 @@ DEFAULT_SECRET_DIR_LOCATION = Path.home()
 DEFAULT_SECRET_DIR_NAME     = '.secrets/'
 DEFAULT_SECRET_DIR          = DEFAULT_SECRET_DIR_LOCATION/DEFAULT_SECRET_DIR_NAME
 KEYS_DIR = 'keys/'
-DEFAULT_SYM_KEY_LOCATION       = DEFAULT_SECRET_DIR/KEYS_DIR/'aes_key'
-DEFAULT_ASYM_PUBL_KEY_LOCATION = DEFAULT_SECRET_DIR/KEYS_DIR/'rsa_publ.pem'
-DEFAULT_ASYM_PRIV_KEY_LOCATION = DEFAULT_SECRET_DIR/KEYS_DIR/'rsa_priv.pem' 
+DEFAULT_SYM_KEY_NAME       = 'aes_key'
+DEFAULT_ASYM_PUBL_KEY_NAME = 'rsa_publ.pem'
+DEFAULT_ASYM_PRIV_KEY_NAME = 'rsa_priv.pem' 
 
 class SecretStore():
     def __init__(self, 
                  secrets_dir_path = None,
+                 secrets_dir_prefix_dir = '',
                  sym_key_path = None,
                  asym_publ_key_path = None,
                  asym_priv_key_path = None,
                  password_protect_private_key = False):
         self.secrets_dir_path = secrets_dir_path
+        self.secrets_dir_prefix_dir = secrets_dir_prefix_dir
         self.symetric_key_path = sym_key_path
         self.asymetric_pub_key_path = asym_publ_key_path
         self.asymetric_priv_key_path = asym_priv_key_path
@@ -78,7 +80,7 @@ class SecretStore():
             if not self.symetric_key_path.exists():
                 _logger.fatal(f'symetric aes key not found at location {self.symetric_key_path}')
         else:
-            symetric_key_path = Path(DEFAULT_SYM_KEY_LOCATION)
+            symetric_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_SYM_KEY_NAME)
             self._write_symetric_key(self._generate_symetric_key(),
                                      symetric_key_path)
             self.symetric_key_path = symetric_key_path
@@ -94,8 +96,8 @@ class SecretStore():
                 _logger.fatal(f'asym rsa priv key not found at {self.asymetrical_priv_key_path}')
         else:
             private_key, public_key = self._generate_asymetric_key()
-            private_key_path = Path(DEFAULT_ASYM_PRIV_KEY_LOCATION)
-            public_key_path = Path(DEFAULT_ASYM_PUBL_KEY_LOCATION)
+            private_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_ASYM_PRIV_KEY_NAME)
+            public_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_ASYM_PUBL_KEY_NAME)
             self._write_private_key(private_key, private_key_path)
             self.asymetric_priv_key_path = private_key_path
             self._write_public_key(public_key, public_key_path)    
@@ -108,7 +110,7 @@ class SecretStore():
                not self.secrets_dir_path.is_dir():
                 _logger.fatal('provided secrets dir doesnt exist or isnt dir')
         else:
-            secrets_dir_path = DEFAULT_SECRET_DIR_LOCATION/DEFAULT_SECRET_DIR_NAME
+            secrets_dir_path = DEFAULT_SECRET_DIR_LOCATION/DEFAULT_SECRET_DIR_NAME/self.secrets_dir_prefix_dir
             if not secrets_dir_path.exists():
                 os.makedirs(secrets_dir_path, exist_ok=True)
             elif not secrets_dir_path.is_dir():
@@ -137,9 +139,10 @@ class SecretStore():
 
 
     def _write_symetric_key(self, sym_key, path):
-        with open(path, 'wb+') as f:
-            f.write(sym_key)
-        
+        if not path.exists():
+            with open(path, 'wb+') as f:
+                f.write(sym_key)
+            
 
     def _read_symetric_key(self):
         sym_key = ''
@@ -151,17 +154,18 @@ class SecretStore():
 
 
     def _write_private_key(self, private_key, path):
-        if self.password_protect_private_key:
-            password = getpass('enter the password for your private key')  
-            encryption = serialization.BestAvailableEncryption(password.encode())
-        else:
-            encryption = serialization.NoEncryption()
-        pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=encryption)
-        with open(path, 'wb+') as f:
-            f.write(pem)    
+        if not path.exists():
+            if self.password_protect_private_key:
+                password = getpass('enter the password for your private key')  
+                encryption = serialization.BestAvailableEncryption(password.encode())
+            else:
+                encryption = serialization.NoEncryption()
+            pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=encryption)
+            with open(path, 'wb+') as f:
+                f.write(pem)    
 
 
     def _read_private_key(self):
@@ -182,11 +186,12 @@ class SecretStore():
 
 
     def _write_public_key(self, public_key, path):
-        pem = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo)
-        with open(path, 'wb+') as f:
-            f.write(pem)
+        if not path.exists():
+            pem = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo)
+            with open(path, 'wb+') as f:
+                f.write(pem)
 
     def _read_public_key(self):
         public_key = ''
