@@ -20,6 +20,7 @@ TODO: update the API later to not require the private key... it seems
 
 import base64
 from getpass import getpass
+import hashlib
 import importlib.resources as pkg_resources
 import json
 import logging
@@ -60,27 +61,125 @@ DEFAULT_ASYM_PRIV_KEY_NAME = 'rsa_priv.pem'
 class SecretStore():
     def __init__(self, 
                  secrets_dir_path = None,
-                 secrets_dir_prefix_dir = '',
+                 secrets_dir_prefix = '',
                  sym_key_path = None,
                  asym_publ_key_path = None,
                  asym_priv_key_path = None,
-                 password_protect_private_key = False):
+                 password_protect_private_key = False,
+                 obsfucate_file_names = True):
+        """
+        """
         self.secrets_dir_path = secrets_dir_path
-        self.secrets_dir_prefix_dir = secrets_dir_prefix_dir
+        self.secrets_dir_base_path = self.secrets_dir_path
+        self.secrets_dir_prefix = secrets_dir_prefix
         self.symetric_key_path = sym_key_path
         self.asymetric_pub_key_path = asym_publ_key_path
         self.asymetric_priv_key_path = asym_priv_key_path
         self.password_protect_private_key = password_protect_private_key
-        pass
+        self.obsfucate_file_names = obsfucate_file_names
+        self._validate_paths()
+        
+
+
+    @staticmethod
+    def _hash_strings(*args, consecutive_hashing=True):
+        """
+        The secrets dir prefix dir and secret name are stored on disk 
+        hashed to preserve the nature of the secrets
+
+        If consecutive_hashing is True, then the output of the first hash
+        will be appended to the raw string when calculating the second hash, 
+        and so on. This may be similar to a merkel tree. 
+        """
+        hashed_strings = []
+        for i in range(len(args)):
+            string=args[i]
+            if i != 0 and consecutive_hashing:
+                string += hashed_strings[i-1]
+            hashed_strings.append(hashlib.sha3_224(base64.b64encode(string.encode('utf-8'))).hexdigest())
+        return hashed_strings
+
+
+    def _generate_obfsucated_path(self,  
+                                  path,
+                                  matching_existing,
+                                  consecutive_hashing=True):
+        """
+        given a path like:
+        <some_location>/<secrets_dir>/<some_location>,
+        generates a similar path where everything after secrets dir is 
+        obsfucated
+        for example, input of :
+            Path('/home/user/.secrets/my_app/my_sensitive_info')
+        returns:
+            Path('/home/user/.secrets/ZqkVm39/9xmPoel=')
+        """
+        secrets_dir_name = self.secrets_dir_base_path._parts[-1]
+        path_parts = path._parts[path._parts.index(secrets_dir_name)+1:]
+        obsfucated_path_parts = SecretStore._hash_strings(*path_parts, 
+                                                          consecutive_hashing=consecutive_hashing)
+        # determine location of the secrets dir
+
+        # get all elements in path after the secrets dir
+        return self.secrets_dir_path/'/'.join(obsfucated_path_parts)
+
+        
+
+    def _find_or_make_secrets_directory(self):
+        if self.secrets_dir_base_path:
+            if not self.secrets_dir_base_path.exists() or \
+               not self.secrets_dir_base_path.is_dir():
+                _logger.fatal('provided secrets dir doesnt exist or isnt dir')
+        else:
+            secrets_dir_base_path = DEFAULT_SECRET_DIR_LOCATION/DEFAULT_SECRET_DIR_NAME
+            if not secrets_dir_base_path.exists():
+                os.makedirs(secrets_dir_base_path, exist_ok=True)
+            elif not secrets_dir_base_path.is_dir():
+                _logger.fatal(f'{secrets_dir_base_path.__str__} exists but is not a dir!')
+            self.secrets_dir_base_path = secrets_dir_base_path
+            self.secrets_dir_path = secrets_dir_base_path
+
+
+    def _find_or_make_secrets_prefix_directory(self):
+        if self.secrets_dir_prefix == '':
+            self.secrets_dir_path = self.secrets_dir_base_path
+            return
+        else:
+            assert self.secrets_dir_base_path
+            secrets_dir_path = self.secrets_dir_base_path/self.secrets_dir_prefix
+            if self.obsfucate_file_names:
+                secrets_dir_path = self._generate_obfsucated_path(secrets_dir_path, 
+                                                                  matching_existing=False)
+            if secrets_dir_path.exists() and not secrets_dir_path.is_dir():
+                _logger.fatal(f'{secrets_dir_path} exists but is not a dir!')
+            os.makedirs(secrets_dir_path, exist_ok=True)
+            self.secrets_dir_path = secrets_dir_path
+            self.secrets_dir_prefix = secrets_dir_path._parts[-1]
+            
+
+    def _find_or_make_secrets_key_directory(self):
+        assert self.secrets_dir_path
+        keys_dir_path = self.secrets_dir_path/KEYS_DIR
+        if self.obsfucate_file_names:
+            keys_dir_path = self._generate_obfsucated_path(keys_dir_path,
+                                                           matching_existing=False)
+        if keys_dir_path.exists() and not keys_dir_path.is_dir():
+            _logger.fatal(f'key dir exists, but is not a directory: {keys_dir_path}')
+        os.makedirs(keys_dir_path, exist_ok=True)
+
 
     def _validate_paths(self):
         self._find_or_make_secrets_directory()
+        self._find_or_make_secrets_prefix_directory()
         self._find_or_make_secrets_key_directory()
         if self.symetric_key_path:
             if not self.symetric_key_path.exists():
                 _logger.fatal(f'symetric aes key not found at location {self.symetric_key_path}')
         else:
             symetric_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_SYM_KEY_NAME)
+            if self.obsfucate_file_names:
+                symetric_key_path = self._generate_obfsucated_path(symetric_key_path, 
+                                                                   matching_existing=False)
             self._write_symetric_key(self._generate_symetric_key(),
                                      symetric_key_path)
             self.symetric_key_path = symetric_key_path
@@ -98,32 +197,15 @@ class SecretStore():
             private_key, public_key = self._generate_asymetric_key()
             private_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_ASYM_PRIV_KEY_NAME)
             public_key_path = Path(self.secrets_dir_path/KEYS_DIR/DEFAULT_ASYM_PUBL_KEY_NAME)
+            if self.obsfucate_file_names:
+                private_key_path = self._generate_obfsucated_path(private_key_path,
+                                                                  matching_existing=False)
+                public_key_path = self._generate_obfsucated_path(public_key_path,
+                                                                  matching_existing=False)
             self._write_private_key(private_key, private_key_path)
             self.asymetric_priv_key_path = private_key_path
             self._write_public_key(public_key, public_key_path)    
             self.asymetric_pub_key_path = public_key_path
-        
-
-    def _find_or_make_secrets_directory(self):
-        if self.secrets_dir_path:
-            if not self.secrets_dir_path.exists() or \
-               not self.secrets_dir_path.is_dir():
-                _logger.fatal('provided secrets dir doesnt exist or isnt dir')
-        else:
-            secrets_dir_path = DEFAULT_SECRET_DIR_LOCATION/DEFAULT_SECRET_DIR_NAME/self.secrets_dir_prefix_dir
-            if not secrets_dir_path.exists():
-                os.makedirs(secrets_dir_path, exist_ok=True)
-            elif not secrets_dir_path.is_dir():
-                _logger.fatal(f'{secrets_dir_path.__str__} exists but is not a str!')
-            self.secrets_dir_path = secrets_dir_path
-
-
-    def _find_or_make_secrets_key_directory(self):
-        self._find_or_make_secrets_directory()
-        key_dir_path = self.secrets_dir_path/KEYS_DIR
-        if key_dir_path.exists() and not key_dir_path.is_dir():
-            _logger.fatal(f'key dir exists, but is not a directory: {key_dir_path}')
-        os.makedirs(key_dir_path, exist_ok=True)
 
 
     def _generate_symetric_key(self):
@@ -204,7 +286,7 @@ class SecretStore():
             _logger.fatal('failed to read public key from file')
         return public_key
 
-
+    """
     def _write_key_to_secret_store(self, 
                                    sym_key=None,
                                    public_key=None, 
@@ -216,6 +298,7 @@ class SecretStore():
         else:
             self._write_private_key(private_key)
             self._write_public_key(public_key)
+    """
 
 
     def _encrypt_data(self, sym_key, data):
@@ -251,13 +334,21 @@ class SecretStore():
 
 
     def _write_secret(self, name, data):
-        with open(self.secrets_dir_path/name, 'wb+') as secret_file:
+        path = self.secrets_dir_path/name
+        if self.obsfucate_file_names:
+            path = self._generate_obfsucated_path(path,
+                                                  matching_existing=False)
+        with open(path, 'wb+') as secret_file:
             secret_file.write(data)
 
 
     def _read_secret(self, name):
+        path = self.secrets_dir_path/name
+        if self.obsfucate_file_names:
+            path = self._generate_obfsucated_path(path,
+                                                  matching_existing=True)
         secret = ''
-        with open(self.secrets_dir_path/name, 'rb') as secret_file:
+        with open(path, 'rb') as secret_file:
             secret =  secret_file.read()
         return secret
 
@@ -277,7 +368,6 @@ class SecretStore():
         and relevant keys and create them if they don't exist 
         each time.
         """
-        self._validate_paths()
         data_json_str = json.dumps(data)
         data_encoded_str = base64.b64encode(data_json_str.encode())
         
@@ -290,7 +380,6 @@ class SecretStore():
 
 
     def retrieve_secret(self,secret_name, encrypted_key):
-        self._validate_paths()
         secret = self._read_secret(secret_name)
         private_key = self._read_private_key()
         decrypted_key = self._decrypt_key(private_key, encrypted_key)
